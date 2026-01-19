@@ -267,11 +267,14 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
 
 # ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
 
+# ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
+
 def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """
     Strictly looks for Speed Test data.
     Includes TELECOM EXPERT RULES to prevent hallucinations (e.g. reading 2160p as speed).
     """
+    image_name = Path(image_path).name
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
@@ -280,14 +283,14 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
 
     # SMART PROMPT WITH DOMAIN KNOWLEDGE
     prompt = (
-        "You are a Senior RF Engineer validating drive test data. Extract SPEED TEST metrics.\n\n"
+        "You are a Senior RF Engineer validating 5G drive test data. Extract SPEED TEST metrics.\n\n"
         "DOMAIN RULES (SANITY CHECKS):\n"
         "1. **Resolution Trap**: If you see '2160', '1080', or '720', these are VIDEO RESOLUTIONS. Do NOT report them as Download/Upload speed.\n"
         "2. **Latency vs Speed**: If the screen shows ONLY 'Ping' and 'Jitter' (Latency Test), return 'null' for Download/Upload.\n"
         "3. **Decimal Danger**: Ping is usually an integer (e.g., 28, 44). If you see '2.8', look closer—it might be '28'. Do not hallucinate decimals for Ping unless clearly visible.\n"
         "4. **Visual Hierarchy**: Download speed is usually the LARGEST number on screen. If a number is small or in the corner, it's likely metadata, not speed.\n\n"
         "REQUIRED OUTPUT:\n"
-        "Return valid JSON matching this schema exactly. Use 'null' (no quotes) for missing values.\n"
+        "Return valid JSON matching this schema exactly. Use null (no quotes) for missing values.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['speed_test'], indent=2)}"
     )
 
@@ -302,12 +305,13 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
         res = json.loads(content)
         
-        # LOGIC CHECK: If the model returns 2160 as speed, we reject it immediately.
+        # LOGIC CHECK 1: If the model returns 2160/1080 as speed, it failed the Domain Rule. Reject it.
         dl = res.get("data", {}).get("download_mbps")
-        if dl == 2160 or dl == 1080:
-            return None # This is actually a video test
+        if dl in [2160, 1080, 720, 2160.0, 1080.0]:
+            log_append(log_placeholder, logs, f"[SMART CHECK] Rejected {dl} Mbps as likely Video Resolution.")
+            return None 
             
-        # Validation: Must have at least download/upload OR valid ping to be useful
+        # LOGIC CHECK 2: Must have at least download/upload OR valid ping to be useful
         data = res.get("data", {})
         if data.get("download_mbps") is None and data.get("upload_mbps") is None and data.get("ping_ms") is None:
             return None
@@ -319,6 +323,7 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
 
 def analyze_video_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """Strictly looks for Video Test data. Ignores Speed/Mbps."""
+    image_name = Path(image_path).name
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
@@ -330,8 +335,8 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
         "DOMAIN RULES:\n"
         "1. **Target**: Look strictly for 'Max Resolution', 'Resolution', 'Load Time', or 'Buffering'.\n"
         "2. **Ignore Speed**: Do NOT report numbers labeled 'Mbps', 'Download', or 'Upload'.\n"
-        "3. **Format**: '2160p' or '4K' goes into 'max_resolution'.\n"
-        "4. **Load Time**: Often labeled as 'Time to Start' or 'Load Time' in milliseconds (ms).\n\n"
+        "3. **Format**: '2160p', '4K', '1080p' goes into 'max_resolution'.\n"
+        "4. **Load Time**: Often labeled as 'Time to Start' or 'Load Time'. Convert to milliseconds (e.g. 1.2s = 1200).\n\n"
         "REQUIRED OUTPUT:\n"
         "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['video_test'], indent=2)}"
@@ -358,6 +363,7 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
 
 def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """Strictly looks for Voice Call data."""
+    image_name = Path(image_path).name
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
@@ -384,7 +390,10 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
         resp = _post_chat_completion(token, payload, timeout=50)
         resp.raise_for_status()
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
-        return json.loads(content)
+        res = json.loads(content)
+        if res.get("data", {}).get("call_status") is not None or res.get("data", {}).get("phone_number") is not None or res.get("data", {}).get("time") is not None:
+            return res
+        return None
     except Exception:
         return None
 
