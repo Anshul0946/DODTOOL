@@ -322,8 +322,7 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
 
 
 def analyze_video_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    """Strictly looks for Video Test data. Ignores Speed/Mbps."""
-    image_name = Path(image_path).name
+    """Strictly looks for Video Test data. Prioritizes specific numbers over generic labels."""
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
@@ -334,9 +333,12 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
         "You are a Senior RF Engineer validating video streaming tests. Extract VIDEO metrics.\n\n"
         "DOMAIN RULES:\n"
         "1. **Target**: Look strictly for 'Max Resolution', 'Resolution', 'Load Time', or 'Buffering'.\n"
-        "2. **Ignore Speed**: Do NOT report numbers labeled 'Mbps', 'Download', or 'Upload'.\n"
-        "3. **Format**: '2160p', '4K', '1080p' goes into 'max_resolution'.\n"
-        "4. **Load Time**: Often labeled as 'Time to Start' or 'Load Time'. Convert to milliseconds (e.g. 1.2s = 1200).\n\n"
+        "2. **Precision Rule (CRITICAL)**: \n"
+        "   - Prefer specific NUMERICAL resolutions (e.g., '2160p', '1080p') over generic labels (e.g., '4K', 'HD').\n"
+        "   - If the screen says '2160p' AND '4K', extract '2160p'.\n"
+        "   - Only output '4K' if no numerical resolution (like 2160p) is visible.\n"
+        "3. **Load Time**: Extract the exact number in milliseconds (ms). If units are seconds (s), convert (1.2s = 1200).\n"
+        "4. **Ignore Speed**: Do not extract Mbps figures here.\n\n"
         "REQUIRED OUTPUT:\n"
         "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['video_test'], indent=2)}"
@@ -353,7 +355,6 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
         res = json.loads(content)
         
-        # Validation: Must have max_resolution or load time
         if res.get("data", {}).get("max_resolution") is not None or res.get("data", {}).get("load_time_ms") is not None:
             return res
         return None
@@ -363,7 +364,6 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
 
 def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """Strictly looks for Voice Call data."""
-    image_name = Path(image_path).name
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
@@ -373,9 +373,11 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
     prompt = (
         "You are a Telecom Engineer analyzing Voice Call tests. Extract CALL metrics.\n\n"
         "RULES:\n"
-        "1. **Visuals**: Look for a dialer screen, 'Incoming Call', 'Dialing', or a call timer (00:00).\n"
-        "2. **Ignore**: Any Speed Test maps or Video players.\n"
-        "3. **Status**: Extract 'Call Status' (e.g. Incoming, Connected, Dialing).\n\n"
+        "1. **Visuals**: Look for a dialer screen, 'Incoming Call', 'Dialing'.\n"
+        "2. **Duration (CRITICAL)**: Read the call timer EXACTLY as shown (e.g., '00:10', '0:12').\n"
+        "   - Convert the timer value to total seconds (e.g., '00:10' -> 10).\n"
+        "   - Do NOT assume the duration is 0 unless the timer literally reads '00:00'.\n"
+        "3. **Ignore**: Speed/Video data.\n\n"
         "REQUIRED OUTPUT:\n"
         "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['voice_call'], indent=2)}"
@@ -390,13 +392,9 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
         resp = _post_chat_completion(token, payload, timeout=50)
         resp.raise_for_status()
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
-        res = json.loads(content)
-        if res.get("data", {}).get("call_status") is not None or res.get("data", {}).get("phone_number") is not None or res.get("data", {}).get("time") is not None:
-            return res
-        return None
+        return json.loads(content)
     except Exception:
         return None
-
 
 def dispatch_image_analysis(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """
