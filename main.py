@@ -265,25 +265,29 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
 
 # ---------------- SPECIALIZED ANALYZERS (SEPARATED) ----------------
 
+# ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
+
 def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    """Strictly looks for Speed Test data (Mbps, Ping). Ignores everything else."""
-    image_name = Path(image_path).name
+    """
+    Strictly looks for Speed Test data.
+    Includes TELECOM EXPERT RULES to prevent hallucinations (e.g. reading 2160p as speed).
+    """
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
         return None
 
-    # STRICT SPEED PROMPT
+    # SMART PROMPT WITH DOMAIN KNOWLEDGE
     prompt = (
-        "TASK: Extract SPEED TEST data only.\n"
-        "RULES:\n"
-        "1. LOOK FOR: 'Download' (Mbps), 'Upload' (Mbps), 'Ping' (ms), 'Jitter' (ms).\n"
-        "2. IGNORE: Video resolution (2160p, 4K), phone numbers, or dates.\n"
-        "3. CRITICAL: Do NOT extract '2160' or '1080' as speed if it is part of a video resolution.\n"
-        "4. FORMAT: Return VALID JSON. Ensure every field ends with a COMMA ',' if another follows.\n"
-        "5. OUTPUT: Single JSON object matching the schema. Start with '{' and end with '}'.\n"
-        "6. SILENCE: Do NOT output conversational text.\n\n"
+        "You are a Senior RF Engineer validating drive test data. Extract SPEED TEST metrics.\n\n"
+        "DOMAIN RULES (SANITY CHECKS):\n"
+        "1. **Resolution Trap**: If you see '2160', '1080', or '720', these are VIDEO RESOLUTIONS. Do NOT report them as Download/Upload speed.\n"
+        "2. **Latency vs Speed**: If the screen shows ONLY 'Ping' and 'Jitter' (Latency Test), return 'null' for Download/Upload.\n"
+        "3. **Decimal Danger**: Ping is usually an integer (e.g., 28, 44). If you see '2.8', look closer—it might be '28'. Do not hallucinate decimals for Ping unless clearly visible.\n"
+        "4. **Visual Hierarchy**: Download speed is usually the LARGEST number on screen. If a number is small or in the corner, it's likely metadata, not speed.\n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return valid JSON matching this schema exactly. Use 'null' (no quotes) for missing values.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['speed_test'], indent=2)}"
     )
 
@@ -297,32 +301,39 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
         resp.raise_for_status()
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
         res = json.loads(content)
-        # Validation: Must have at least download or upload to be valid
-        if res.get("data", {}).get("download_mbps") is not None or res.get("data", {}).get("upload_mbps") is not None:
-            return res
-        return None
+        
+        # LOGIC CHECK: If the model returns 2160 as speed, we reject it immediately.
+        dl = res.get("data", {}).get("download_mbps")
+        if dl == 2160 or dl == 1080:
+            return None # This is actually a video test
+            
+        # Validation: Must have at least download/upload OR valid ping to be useful
+        data = res.get("data", {})
+        if data.get("download_mbps") is None and data.get("upload_mbps") is None and data.get("ping_ms") is None:
+            return None
+            
+        return res
     except Exception:
         return None
 
 
 def analyze_video_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    """Strictly looks for Video Test data (Resolution, Buffering). Ignores Speed/Mbps."""
-    image_name = Path(image_path).name
+    """Strictly looks for Video Test data. Ignores Speed/Mbps."""
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
         return None
 
-    # STRICT VIDEO PROMPT
     prompt = (
-        "TASK: Extract VIDEO TEST data only.\n"
-        "RULES:\n"
-        "1. LOOK FOR: 'Max Resolution' (e.g. 2160p, 4K), 'Load Time', 'Buffering'.\n"
-        "2. IGNORE: Internet speeds (Mbps), Ping, or Call Timers.\n"
-        "3. CRITICAL: '2160p' is a RESOLUTION, NOT a speed. Do not put 2160 in a speed field.\n"
-        "4. FORMAT: Return VALID JSON. Ensure commas between fields.\n"
-        "5. OUTPUT: Single JSON object matching the schema. Start with '{' and end with '}'.\n\n"
+        "You are a Senior RF Engineer validating video streaming tests. Extract VIDEO metrics.\n\n"
+        "DOMAIN RULES:\n"
+        "1. **Target**: Look strictly for 'Max Resolution', 'Resolution', 'Load Time', or 'Buffering'.\n"
+        "2. **Ignore Speed**: Do NOT report numbers labeled 'Mbps', 'Download', or 'Upload'.\n"
+        "3. **Format**: '2160p' or '4K' goes into 'max_resolution'.\n"
+        "4. **Load Time**: Often labeled as 'Time to Start' or 'Load Time' in milliseconds (ms).\n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['video_test'], indent=2)}"
     )
 
@@ -336,8 +347,9 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
         resp.raise_for_status()
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
         res = json.loads(content)
-        # Validation: Must have max_resolution to be a valid video test
-        if res.get("data", {}).get("max_resolution") is not None:
+        
+        # Validation: Must have max_resolution or load time
+        if res.get("data", {}).get("max_resolution") is not None or res.get("data", {}).get("load_time_ms") is not None:
             return res
         return None
     except Exception:
@@ -346,21 +358,20 @@ def analyze_video_test(token: str, image_path: str, model_name: str, log_placeho
 
 def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """Strictly looks for Voice Call data."""
-    image_name = Path(image_path).name
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
         return None
 
-    # STRICT VOICE PROMPT
     prompt = (
-        "TASK: Extract VOICE CALL data only.\n"
+        "You are a Telecom Engineer analyzing Voice Call tests. Extract CALL metrics.\n\n"
         "RULES:\n"
-        "1. LOOK FOR: Phone numbers, 'Incoming', 'Dialing', Call Duration (00:00).\n"
-        "2. IGNORE: Mbps, Resolution, 4K, 2160p.\n"
-        "3. FORMAT: Return VALID JSON. Ensure commas between fields.\n"
-        "4. OUTPUT: Single JSON object matching the schema. Start with '{' and end with '}'.\n\n"
+        "1. **Visuals**: Look for a dialer screen, 'Incoming Call', 'Dialing', or a call timer (00:00).\n"
+        "2. **Ignore**: Any Speed Test maps or Video players.\n"
+        "3. **Status**: Extract 'Call Status' (e.g. Incoming, Connected, Dialing).\n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['voice_call'], indent=2)}"
     )
 
@@ -373,11 +384,7 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
         resp = _post_chat_completion(token, payload, timeout=50)
         resp.raise_for_status()
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
-        res = json.loads(content)
-        # Validation: Must have phone number or status or time
-        if res.get("data", {}).get("call_status") is not None or res.get("data", {}).get("phone_number") is not None or res.get("data", {}).get("time") is not None:
-            return res
-        return None
+        return json.loads(content)
     except Exception:
         return None
 
@@ -385,7 +392,6 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
 def dispatch_image_analysis(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """
     Smart Router: Tries tests in a specific order based on filename index.
-    Prevents hallucination by only letting the AI look for ONE thing at a time.
     """
     path_obj = Path(image_path)
     image_name = path_obj.stem
@@ -424,13 +430,10 @@ def dispatch_image_analysis(token: str, image_path: str, model_name: str, log_pl
 
 # Wrappers to maintain compatibility if called elsewhere
 def evaluate_generic_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    # Retry now uses the smart dispatcher too
     return dispatch_image_analysis(token, image_path, model_name, log_placeholder, logs)
 
 def evaluate_voice_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    # Retry now uses strict voice analyzer
     return analyze_voice_test_strict(token, image_path, model_name, log_placeholder, logs)
-
 # ---------------- Careful evaluation functions ----------------
 def evaluate_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0] if image1_path else "unknown"
