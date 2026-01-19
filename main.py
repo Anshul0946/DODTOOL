@@ -22,8 +22,7 @@ import openpyxl
 from PIL import Image
 
 # ---------------- Configuration ----------------
-# CHANGED: Updated API Base and Models for NVIDIA
-API_BASE = "https://integrate.api.nvidia.com/v1"
+API_BASE = "[https://integrate.api.nvidia.com/v1](https://integrate.api.nvidia.com/v1)"
 MODEL_SERVICE_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
 MODEL_GENERIC_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
 
@@ -126,20 +125,27 @@ def get_sector_from_col(col_index: int) -> str:
         return "voicetest"
     return "unknown"
 
-#---------------- new additon ----------------------
+#---------------- UPDATED CLEANER (Safety Net) ----------------------
 
 def clean_json_response(content: str) -> str:
-    """Remove markdown code blocks from JSON responses."""
+    """
+    Robust cleaning: finds the first '{' and the last '}' to extract valid JSON,
+    discarding any chatty intro/outro text.
+    """
     if not content:
         return content
     
     content = content.strip()
+
+    # 1. Try to find the outermost JSON object using Regex
+    # This looks for the first '{' and the last '}' across line breaks
+    match = re.search(r'(\{.*\})', content, re.DOTALL)
+    if match:
+        content = match.group(1)
     
-    # Remove markdown code block wrappers
+    # 2. Cleanup markdown wrappers if they still exist inside the extraction
     if content.startswith("```"):
-        # Remove opening ```json or ```
         content = re.sub(r'^```(?:json)?\s*\n?', '', content)
-        # Remove closing ```
         content = re.sub(r'\n?```\s*$', '', content)
     
     return content.strip()
@@ -214,10 +220,12 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         log_append(log_placeholder, logs, f"[ERROR] Could not read/encode service images: {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "You are a hyper-specialized AI for cellular network engineering data analysis. "
-        "Analyze both provided service-mode screenshots carefully and return exactly one JSON object "
-        "matching the schema. Use null where value is not found.\n\n"
+        "You are a hyper-specialized AI for cellular network engineering. "
+        "Analyze both service-mode screenshots. Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -233,7 +241,6 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
                 ],
             }
         ],
-        # "response_format": {"type": "json_object"}, # Removed for compatibility with NVIDIA API
     }
 
     try:
@@ -264,10 +271,13 @@ def analyze_generic_image(token: str, image_path: str, model_name: str, log_plac
         log_append(log_placeholder, logs, f"[ERROR] Could not read/encode image '{image_name}': {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "You are an expert AI assistant for analyzing cellular network test data. "
-        "Classify the image as 'speed_test', 'video_test', or 'voice_call' and return a single JSON object "
-        "matching the corresponding schema. Use null for missing fields.\n\n"
+        "You are an expert AI for cellular network test data. "
+        "Classify the image as 'speed_test', 'video_test', or 'voice_call'. "
+        "Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMAS:\n{json.dumps(GENERIC_SCHEMAS, indent=2)}"
     )
 
@@ -282,7 +292,6 @@ def analyze_generic_image(token: str, image_path: str, model_name: str, log_plac
                 ],
             }
         ],
-        # "response_format": {"type": "json_object"}, # Removed for compatibility with NVIDIA API
     }
 
     try:
@@ -313,9 +322,12 @@ def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeh
         log_append(log_placeholder, logs, f"[VOICE ERROR] Could not read/encode: {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "You are an expert in telecom voice-call screenshot extraction. Extract ONLY the fields in the voice_call schema "
-        "and emphasize 'time' (return exactly as seen). Return one JSON object.\n\n"
+        "You are an expert in telecom voice-call screenshot extraction. "
+        "Extract ONLY the fields in the voice_call schema. "
+        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['voice_call'], indent=2)}"
     )
 
@@ -330,7 +342,6 @@ def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeh
                 ],
             }
         ],
-        # "response_format": {"type": "json_object"}, # Removed for compatibility with NVIDIA API
     }
 
     try:
@@ -351,7 +362,6 @@ def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeh
         time.sleep(2)
 
 
-
 def evaluate_voice_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """Careful evaluation of voice image - same as analyze_voice_image but for retry logic."""
     return analyze_voice_image(token, image_path, model_name, log_placeholder, logs)
@@ -369,9 +379,12 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not read/encode images: {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "CAREFUL EVALUATION: Examine both images line-by-line and extract values matching the schema. "
-        "Return a single JSON object. Use null only if field truly not present.\n\n"
+        "CAREFUL EVALUATION: Examine both images. Return a single JSON object. "
+        "Use null only if field truly not present. "
+        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -387,7 +400,6 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
                 ],
             }
         ],
-        # "response_format": {"type": "json_object"}, # Removed for compatibility with NVIDIA API
     }
 
     try:
@@ -416,9 +428,11 @@ def evaluate_generic_image(token: str, image_path: str, model_name: str, log_pla
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not read/encode '{image_name}': {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "CAREFUL EVALUATION: Analyze the image slowly and return a single JSON object matching one of the schemas. "
-        "Use null only when necessary.\n\n"
+        "CAREFUL EVALUATION: Analyze the image. Return a single JSON object matching one of the schemas. "
+        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMAS:\n{json.dumps(GENERIC_SCHEMAS, indent=2)}"
     )
 
@@ -433,7 +447,6 @@ def evaluate_generic_image(token: str, image_path: str, model_name: str, log_pla
                 ],
             }
         ],
-        # "response_format": {"type": "json_object"}, # Removed for compatibility with NVIDIA API
     }
 
     try:
@@ -547,17 +560,19 @@ def ask_model_for_expression_value(token: str, var_name: str, var_obj, expressio
     except Exception:
         var_json = json.dumps(str(var_obj))
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
         f"You are an exact assistant. You are given a JSON variable named '{var_name}':\n\n"
         f"{var_json}\n\nGiven the expression:\n{expression}\n\n"
         "Using ONLY the provided JSON variable, return exactly one JSON object:\n{ \"value\": <value> }\n"
-        "Where <value> is the exact value or null. Return ONLY the JSON object and nothing else."
+        "Where <value> is the exact value or null. "
+        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
+        "Start your response with '{' and end with '}'."
     )
 
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        # "response_format": {"type": "json_object"}, # Removed for compatibility with NVIDIA API
     }
 
     try:
