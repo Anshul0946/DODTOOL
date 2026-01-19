@@ -271,11 +271,14 @@ def analyze_generic_image(token: str, image_path: str, model_name: str, log_plac
         log_append(log_placeholder, logs, f"[ERROR] Could not read/encode image '{image_name}': {e}")
         return None
 
-    # UPDATED PROMPT: STRICT FORMATTING
+    # UPDATED PROMPT: Added explicit visual cues to distinguish Speed vs Video
     prompt = (
         "You are an expert AI for cellular network test data. "
-        "Classify the image as 'speed_test', 'video_test', or 'voice_call'. "
-        "Return EXACTLY one JSON object matching the schema. "
+        "Analyze the image and classify it into one of these types based on visual keywords:\n"
+        "1. 'speed_test': Look for large numbers with 'Mbps', 'Download', 'Upload', 'Ping'.\n"
+        "2. 'video_test': Look for 'Max Resolution' (e.g., 2160p, 4K, 1080p), 'Load Time', 'Buffering'.\n"
+        "3. 'voice_call': Look for phone numbers, call timers, 'Dialing', 'Incoming'.\n\n"
+        "Return EXACTLY one JSON object matching the correct schema below. "
         "STRICTLY return ONLY the JSON object. Do not add any conversational text. "
         "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMAS:\n{json.dumps(GENERIC_SCHEMAS, indent=2)}"
@@ -310,7 +313,6 @@ def analyze_generic_image(token: str, image_path: str, model_name: str, log_plac
     finally:
         log_append(log_placeholder, logs, "[LOG] Cooldown: waiting 2 seconds")
         time.sleep(2)
-
 
 def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     image_name = Path(image_path).name
@@ -428,9 +430,12 @@ def evaluate_generic_image(token: str, image_path: str, model_name: str, log_pla
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not read/encode '{image_name}': {e}")
         return None
 
-    # UPDATED PROMPT: STRICT FORMATTING
+    # UPDATED PROMPT: Specific visual cues for careful evaluation
     prompt = (
-        "CAREFUL EVALUATION: Analyze the image. Return a single JSON object matching one of the schemas. "
+        "CAREFUL EVALUATION: Analyze the image details to distinguish between Speed Test and Video Test.\n"
+        "- If you see 'Mbps', it is a 'speed_test'. Extract Download/Upload/Ping.\n"
+        "- If you see 'Max Resolution' or 'p' (e.g. 2160p), it is a 'video_test'. Extract Resolution/Load Time.\n"
+        "Return a single JSON object matching one of the schemas. "
         "STRICTLY return ONLY the JSON object. Do not add conversational text. "
         "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMAS:\n{json.dumps(GENERIC_SCHEMAS, indent=2)}"
@@ -463,7 +468,6 @@ def evaluate_generic_image(token: str, image_path: str, model_name: str, log_pla
     finally:
         log_append(log_placeholder, logs, "[EVAL] Cooldown: waiting 2 seconds")
         time.sleep(2)
-
 
 # ---------------- Expression resolution helpers ----------------
 key_pattern = re.compile(r"\[['\"]([^'\"]+)['\"]\]")
