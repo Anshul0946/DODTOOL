@@ -22,7 +22,7 @@ import openpyxl
 from PIL import Image
 
 # ---------------- Configuration ----------------
-API_BASE = "[https://integrate.api.nvidia.com/v1](https://integrate.api.nvidia.com/v1)"
+API_BASE = "https://integrate.api.nvidia.com/v1"
 MODEL_SERVICE_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
 MODEL_GENERIC_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
 
