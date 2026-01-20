@@ -211,20 +211,36 @@ def _post_chat_completion(token: str, payload: dict, timeout: int = 60):
 def process_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0]
     log_append(log_placeholder, logs, f"[LOG] Starting service extraction for '{sector}' using {model_name}")
+    
+    # NEW LOGIC: Stitch 2 images into 1 to satisfy Llama-3.2 limit
     try:
-        with open(image1_path, "rb") as f:
-            b1 = base64.b64encode(f.read()).decode("utf-8")
-        with open(image2_path, "rb") as f:
-            b2 = base64.b64encode(f.read()).decode("utf-8")
+        img1 = Image.open(image1_path)
+        img2 = Image.open(image2_path)
+        
+        # Create a new blank image with combined width
+        total_width = img1.width + img2.width
+        max_height = max(img1.height, img2.height)
+        stitched = Image.new('RGB', (total_width, max_height))
+        
+        # Paste them side-by-side
+        stitched.paste(img1, (0, 0))
+        stitched.paste(img2, (img1.width, 0))
+        
+        # Convert to base64
+        buf = io.BytesIO()
+        stitched.save(buf, format='PNG')
+        b64_stitched = base64.b64encode(buf.getvalue()).decode("utf-8")
+        
     except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] Could not read/encode service images: {e}")
+        log_append(log_placeholder, logs, f"[ERROR] Could not stitch/encode service images: {e}")
         return None
 
-    # UPDATED PROMPT: STRICT FORMATTING
+    # UPDATED PROMPT: Reflects that we are sending 1 combined image
     prompt = (
         "You are a hyper-specialized AI for cellular network engineering. "
-        "Analyze both service-mode screenshots. Return EXACTLY one JSON object matching the schema. "
-        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Analyze this image (which contains two service-mode screenshots side-by-side). "
+        "Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text. "
         "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
@@ -236,8 +252,7 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b1}"}},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b2}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_stitched}"}},
                 ],
             }
         ],
@@ -445,19 +460,30 @@ def evaluate_voice_image(token: str, image_path: str, model_name: str, log_place
 def evaluate_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0] if image1_path else "unknown"
     log_append(log_placeholder, logs, f"[EVAL] Re-evaluating service images for '{sector}' (careful)")
+    
+    # NEW LOGIC: Stitch 2 images into 1
     try:
-        with open(image1_path, "rb") as f:
-            b1 = base64.b64encode(f.read()).decode("utf-8")
-        with open(image2_path, "rb") as f:
-            b2 = base64.b64encode(f.read()).decode("utf-8")
+        img1 = Image.open(image1_path)
+        img2 = Image.open(image2_path)
+        
+        total_width = img1.width + img2.width
+        max_height = max(img1.height, img2.height)
+        stitched = Image.new('RGB', (total_width, max_height))
+        
+        stitched.paste(img1, (0, 0))
+        stitched.paste(img2, (img1.width, 0))
+        
+        buf = io.BytesIO()
+        stitched.save(buf, format='PNG')
+        b64_stitched = base64.b64encode(buf.getvalue()).decode("utf-8")
     except Exception as e:
-        log_append(log_placeholder, logs, f"[EVAL ERROR] Could not read/encode images: {e}")
+        log_append(log_placeholder, logs, f"[EVAL ERROR] Could not stitch/encode images: {e}")
         return None
 
-    # UPDATED PROMPT: STRICT FORMATTING
+    # UPDATED PROMPT
     prompt = (
-        "CAREFUL EVALUATION: Examine both images. Return a single JSON object. "
-        "Use null only if field truly not present. "
+        "CAREFUL EVALUATION: Examine this combined image (two screenshots side-by-side). "
+        "Return a single JSON object. Use null only if field truly not present. "
         "STRICTLY return ONLY the JSON object. Do not add conversational text. "
         "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
@@ -470,8 +496,7 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b1}"}},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b2}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_stitched}"}},
                 ],
             }
         ],
@@ -491,7 +516,6 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
     finally:
         log_append(log_placeholder, logs, "[EVAL] Cooldown: waiting 2 seconds")
         time.sleep(2)
-
 
 # ---------------- Expression resolution helpers ----------------
 key_pattern = re.compile(r"\[['\"]([^'\"]+)['\"]\]")
