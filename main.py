@@ -232,83 +232,74 @@ def _post_chat_completion(token: str, payload: dict, timeout: int = 60):
 
 def process_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0]
-    log_append(log_placeholder, logs, f"[LOG] Processing Service Images for '{sector}' (Vertical Smart Stitch)...")
+    log_append(log_placeholder, logs, f"[LOG] Processing Service Images for '{sector}' (Samsung Pixel-Perfect)...")
     
-    # 1. SMART VERTICAL STITCHING LOGIC
     try:
-        # Load images
+        # 1. LOAD & ENHANCE (High Contrast for Accuracy)
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
         
-        # Pre-process: Convert to Greyscale & Enhance Contrast (Make text POP)
         def enhance_img(img):
-            img = ImageOps.grayscale(img) # Fixes the NameError crash
+            img = ImageOps.grayscale(img)
             enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.0) # High contrast
-            # Optional: Slight sharpness boost
+            img = enhancer.enhance(2.5) # High contrast makes text black/white
             enhancer = ImageEnhance.Sharpness(img)
-            img = enhancer.enhance(1.5)
+            img = enhancer.enhance(2.0)
             return img
 
         img1 = enhance_img(img1)
         img2 = enhance_img(img2)
 
-        # Vertical Stack (Top/Bottom)
-        # Resize width of img2 to match img1 to keep alignment
+        # 2. VERTICAL STITCH (Top/Bottom)
         if img1.width != img2.width:
             ratio = img1.width / img2.width
             new_height = int(img2.height * ratio)
             img2 = img2.resize((img1.width, new_height), Image.Resampling.LANCZOS)
 
-        total_height = img1.height + img2.height + 50 # 50px padding
+        total_height = img1.height + img2.height + 50
         max_width = img1.width
         
-        # Create canvas (White background)
         stitched = Image.new('L', (max_width, total_height), 255)
-        
-        # Paste Image 1 (Top)
         stitched.paste(img1, (0, 0))
         
-        # Draw a black separator line
+        # Black separator line
         from PIL import ImageDraw
         draw = ImageDraw.Draw(stitched)
         draw.rectangle([0, img1.height, max_width, img1.height + 50], fill=0)
         
-        # Paste Image 2 (Bottom)
         stitched.paste(img2, (0, img1.height + 50))
         
-        # Save to buffer
         buf = io.BytesIO()
         stitched.save(buf, format='PNG')
         b64_stitched = base64.b64encode(buf.getvalue()).decode("utf-8")
         
     except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] Could not stitch/encode service images: {e}")
+        log_append(log_placeholder, logs, f"[ERROR] Stitching failed: {e}")
         return None
 
-    # 2. EXACT LABEL MAPPING PROMPT (Based on your screenshots)
+    # 3. PIXEL-PERFECT PROMPT (Maps exactly to your 1.png and 2.png)
     prompt = (
-        "You are an Optical Character Recognition (OCR) engine for Samsung Service Mode screens.\n"
-        "Analyze the stitched image. Extract values based on these EXACT text labels:\n\n"
-        "**LTE SECTION (Look for 'Serving PLMN...LTE'):**\n"
-        "- `lte_band`: Value after 'BAND:' (e.g., 66, 5)\n"
-        "- `lte_bw`: Value after 'BW:' (e.g., 10, 15)\n"
-        "- `lte_earfcn`: Value after 'Earfcn:'\n"
-        "- `lte_pci`: Value after 'PCI:'\n"
-        "- `lte_rsrp`: Value after 'RSRP:'\n"
-        "- `lte_rsrq`: Value after 'RSRQ:'\n"
-        "- `lte_sinr`: Value after 'SNR:'\n\n"
-        "**5G NR SECTION (Look for 'NR5G_' or 'NR_'):**\n"
-        "- `nr5g_rsrp`: Value after 'NR5G_RSRP :' or 'NR_ANT MAX RSRP:'\n"
-        "- `nr5g_sinr`: Value after 'NR5G_SINR :'\n"
-        "- `nr5g_rsrq`: Value after 'NR5G RSRQ :' or 'NR_ANT MIN RSRP' (if RSRQ not found)\n"
-        "- `nr_arfcn`: Value after 'NR_ARFCN:'\n"
-        "- `nr_pci`: Value after 'NR_PCI:'\n"
-        "- `nr_band`: Value after 'NR_BAND:' (extract number, e.g., n77 -> 77)\n"
-        "- `nr_bw`: Value after 'NR_BW:'\n\n"
-        "**RULES:**\n"
-        "1. Return ONLY the JSON object. No other text.\n"
-        "2. If a value is missing on screen, use null.\n"
+        "You are a regex-based OCR engine for Samsung Service Mode.\n"
+        "Extract values strictly based on the text patterns below.\n\n"
+        "**LTE BLOCK (Top of Image):**\n"
+        "1. `lte_band`: Look for 'LTE RRC:CONN BAND:'. The number immediately after 'BAND:'.\n"
+        "2. `lte_bw`: On the same line as Band, look for 'BW:'.\n"
+        "3. `lte_earfcn`: Look for the line starting with 'Earfcn:'. Take the FIRST number before the comma. (Do NOT take the PCI value).\n"
+        "4. `lte_pci`: On the 'Earfcn' line, look for 'PCI:'.\n"
+        "5. `lte_rsrp`: Look for 'RSRP:'. The number immediately after it.\n"
+        "6. `lte_rsrq`: Look for 'RSRQ:'.\n"
+        "7. `lte_sinr`: Look for 'SNR:'. (Note: Label is SNR, not SINR).\n\n"
+        "**5G NR BLOCK (Middle/Bottom of Image):**\n"
+        "1. `nr5g_rsrp`: Look for the exact line 'NR5G_RSRP :' or 'NR_ANT MAX RSRP:'. Take the value.\n"
+        "2. `nr5g_sinr`: Look for the exact line 'NR5G_SINR :'.\n"
+        "3. `nr5g_rsrq`: Look for the exact line 'NR5G RSRQ :' or 'NR5G_RSRQ :'.\n"
+        "4. `nr_arfcn`: Look for 'NR_ARFCN:'.\n"
+        "5. `nr_pci`: Look for 'NR_PCI:'.\n"
+        "6. `nr_band`: Look for 'NR_BAND:'. If it says 'n77', extract 77.\n"
+        "7. `nr_bw`: Look for 'NR_BW:'. Found usually in the bottom half.\n\n"
+        "**FORMATTING:**\n"
+        "- Return ONLY valid JSON.\n"
+        "- If a value is not found, return null.\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -331,13 +322,12 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         content = resp.json()["choices"][0]["message"]["content"]
         content = clean_json_response(content)
         result = json.loads(content)
-        log_append(log_placeholder, logs, f"[SUCCESS] AI processed service data for '{sector}'.")
+        log_append(log_placeholder, logs, f"[SUCCESS] Extracted service data for '{sector}'.")
         return result
     except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] API call failed for service images: {e}")
+        log_append(log_placeholder, logs, f"[ERROR] API call failed: {e}")
         return None
     finally:
-        log_append(log_placeholder, logs, "[LOG] Cooldown: waiting 2 seconds")
         time.sleep(2)
 
 # ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
@@ -353,7 +343,7 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
     except Exception as e:
         return None
 
-    # UPDATED PROMPT: Explicitly warns against Kbps conversion
+    # UPDATED PROMPT
     prompt = (
         "You are a Senior RF Engineer extracting SPEED TEST metrics.\n"
         "Ignore the 'context' of the image (e.g. ads, logos) and focus ONLY on the data.\n\n"
@@ -390,18 +380,16 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
                 log_append(log_placeholder, logs, f"[AUTO-FIX] Download {dl} is impossible. Assuming Kbps -> Mbps.")
                 data["download_mbps"] = dl / 1000
             elif dl in [2160, 1080, 720]: # Video Resolution Trap
-                log_append(log_placeholder, logs, f"[SMART CHECK] Rejected {dl} Mbps as likely Video Resolution.")
                 return None
 
         # 2. Upload Sanity
         ul = data.get("upload_mbps")
         if ul is not None and ul > 5000:
-            # Upload rarely exceeds 500-1000, so >5000 is definitely an error
             data["upload_mbps"] = ul / 1000
 
-        # 3. Ping Sanity (Ping shouldn't be > 2000ms usually, but definitely not floats like 0.02)
+        # 3. Ping Sanity
         ping = data.get("ping_ms")
-        if ping is not None and ping < 1: # If ping is 0.02, it might be seconds
+        if ping is not None and ping < 1: 
              data["ping_ms"] = ping * 1000
 
         # Logic Check: Must have at least one valid metric
