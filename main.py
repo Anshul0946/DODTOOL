@@ -345,7 +345,7 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
 def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """
     Strictly looks for Speed Test data.
-    Includes 'CORNER SCAN' logic to force the model to look at small text.
+    Includes PYTHON-SIDE SANITY CHECKS to fix "558000" type errors.
     """
     try:
         with open(image_path, "rb") as f:
@@ -353,19 +353,17 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
     except Exception as e:
         return None
 
-    # UPDATED PROMPT: Forces the model to look away from the center
+    # UPDATED PROMPT: Explicitly warns against Kbps conversion
     prompt = (
         "You are a Senior RF Engineer extracting SPEED TEST metrics.\n"
         "Ignore the 'context' of the image (e.g. ads, logos) and focus ONLY on the data.\n\n"
-        "CRITICAL EXTRACTION STEPS (Follow in Order):\n"
-        "1. **Center Scan**: Find the LARGEST numbers. These are usually Download/Upload Mbps.\n"
-        "2. **CORNER SCAN (Crucial)**: \n"
-        "   - Shift your attention to the **bottom-right**, **bottom-left**, and **top corners**.\n"
-        "   - Look for small text labeled 'Ping', 'Latency', 'Jitter', 'Idle', or 'ms'.\n"
-        "   - **Force Extraction**: Even if the text is tiny, read it. It is NOT noise.\n"
-        "3. **Sanity Checks**:\n"
-        "   - '2160', '1080', '720' are Video Resolutions. Ignore them.\n"
-        "   - Ping is an integer (e.g. 23). If you see '2.3', it is likely '23'.\n\n"
+        "CRITICAL EXTRACTION STEPS:\n"
+        "1. **Find Numbers**: Look for the largest numbers (Download/Upload).\n"
+        "2. **Check Units**: \n"
+        "   - The image is likely in **Mbps**.\n"
+        "   - Do **NOT** convert to Kbps. Return the number exactly as seen.\n"
+        "   - If you see '558.00', return 558. Do NOT ignore the decimal.\n"
+        "3. **Corner Scan**: Look for 'Ping' or 'Latency' in corners (e.g., 20 ms).\n\n"
         "REQUIRED OUTPUT:\n"
         "Return valid JSON matching this schema exactly. Use null for missing values.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['speed_test'], indent=2)}"
@@ -382,16 +380,35 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
         res = json.loads(content)
         
-        # Logic Check: Reject 4K/1080p masquerading as Speed
-        dl = res.get("data", {}).get("download_mbps")
-        if dl in [2160, 1080, 720, 2160.0, 1080.0]:
-            return None 
-            
-        # Logic Check: Must have at least one valid metric
+        # --- PYTHON SANITY CHECKS (The Fix for 558000) ---
         data = res.get("data", {})
+        
+        # 1. Download Sanity (Max realistic 5G is ~5000 Mbps)
+        dl = data.get("download_mbps")
+        if dl is not None:
+            if dl > 10000: # If > 10,000, it's definitely an error (likely Kbps or decimal error)
+                log_append(log_placeholder, logs, f"[AUTO-FIX] Download {dl} is impossible. Assuming Kbps -> Mbps.")
+                data["download_mbps"] = dl / 1000
+            elif dl in [2160, 1080, 720]: # Video Resolution Trap
+                log_append(log_placeholder, logs, f"[SMART CHECK] Rejected {dl} Mbps as likely Video Resolution.")
+                return None
+
+        # 2. Upload Sanity
+        ul = data.get("upload_mbps")
+        if ul is not None and ul > 5000:
+            # Upload rarely exceeds 500-1000, so >5000 is definitely an error
+            data["upload_mbps"] = ul / 1000
+
+        # 3. Ping Sanity (Ping shouldn't be > 2000ms usually, but definitely not floats like 0.02)
+        ping = data.get("ping_ms")
+        if ping is not None and ping < 1: # If ping is 0.02, it might be seconds
+             data["ping_ms"] = ping * 1000
+
+        # Logic Check: Must have at least one valid metric
         if data.get("download_mbps") is None and data.get("upload_mbps") is None and data.get("ping_ms") is None:
             return None
             
+        res["data"] = data # Save back modified data
         return res
     except Exception:
         return None
