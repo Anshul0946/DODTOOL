@@ -129,27 +129,50 @@ def get_sector_from_col(col_index: int) -> str:
 
 def clean_json_response(content: str) -> str:
     """
-    Robust cleaning: finds the first '{' and the last '}' to extract valid JSON,
-    discarding any chatty intro/outro text.
+    Surgical cleaning: Finds the first valid JSON object by counting braces.
+    This handles cases where the model outputs multiple JSONs or chatty text.
     """
     if not content:
         return content
     
     content = content.strip()
+    
+    # Locate the first opening brace
+    start_idx = content.find('{')
+    if start_idx == -1:
+        return content
+    
+    # Count braces to find the matching closing brace
+    brace_count = 0
+    in_string = False
+    escape = False
+    
+    for i, char in enumerate(content[start_idx:], start=start_idx):
+        if char == '"' and not escape:
+            in_string = not in_string
+        
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                
+                # We found the end of the first valid object
+                if brace_count == 0:
+                    return content[start_idx : i+1]
+        
+        # Handle escape characters for string parsing logic
+        if char == '\\' and not escape:
+            escape = True
+        else:
+            escape = False
 
-    # 1. Try to find the outermost JSON object using Regex
-    # This looks for the first '{' and the last '}' across line breaks
+    # Fallback: If counting failed (malformed), try strictly the regex approach
     match = re.search(r'(\{.*\})', content, re.DOTALL)
     if match:
-        content = match.group(1)
-    
-    # 2. Cleanup markdown wrappers if they still exist inside the extraction
-    if content.startswith("```"):
-        content = re.sub(r'^```(?:json)?\s*\n?', '', content)
-        content = re.sub(r'\n?```\s*$', '', content)
-    
-    return content.strip()
-
+        return match.group(1)
+        
+    return content
 
 # ---------------- Image extraction (only .xlsx now) ----------------
 def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholder, logs: list) -> List[str]:
@@ -212,12 +235,11 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
     sector = Path(image1_path).stem.split("_")[0]
     log_append(log_placeholder, logs, f"[LOG] Starting service extraction for '{sector}' using {model_name}")
     
-    # STITCHING LOGIC (Required for Llama-3.2 Vision)
+    # STITCHING LOGIC
     try:
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
         
-        # Stitch side-by-side
         total_width = img1.width + img2.width
         max_height = max(img1.height, img2.height)
         stitched = Image.new('RGB', (total_width, max_height))
@@ -233,28 +255,27 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         log_append(log_placeholder, logs, f"[ERROR] Could not stitch/encode service images: {e}")
         return None
 
-    # UPDATED PROMPT: TELECOM EXPERT GUARDRAILS
+    # HYBRID PROMPT: STRICT FORMAT + DEEP TELECOM KNOWLEDGE
     prompt = (
-        "You are a Senior RF Engineer analyzing Drive Test Service Mode screens. "
-        "The image contains two screenshots stitched side-by-side. "
+        "You are a Senior RF Engineer. Analyze this stitched Service Mode image.\n"
         "Extract technical network parameters for the ACTIVE SERVING CELL only.\n\n"
-        "CRITICAL EXTRACTION RULES:\n"
+        "CRITICAL RULES (FORMATTING):\n"
+        "1. **NO EXPLANATION**: Output ONLY the JSON string. Do not write 'Step 1' or 'Here is the JSON'.\n"
+        "2. **Single Output**: Provide exactly ONE JSON object. Start strictly with '{' and end with '}'.\n\n"
+        "CRITICAL RULES (DOMAIN LOGIC):\n"
         "1. **Distinguish Techs**: \n"
-        "   - Keys starting with `nr_` must come from the **5G NR** (or SCG) section.\n"
-        "   - Keys starting with `lte_` must come from the **LTE** (or MCG/Anchor) section.\n"
+        "   - Keys starting with `nr_` must come from the **5G NR** (SCG) section.\n"
+        "   - Keys starting with `lte_` must come from the **LTE** (Anchor) section.\n"
         "   - Do NOT mix them (e.g., do not put LTE Band into `nr_band`).\n"
         "2. **Serving vs Neighbor**: \n"
-        "   - Extract data ONLY for the **Serving Cell** (usually the top row, active connection, or labeled 'Serving').\n"
-        "   - IGNORE 'Neighbor', 'Monitored', 'Detected', or 'Listed' cells.\n"
+        "   - Extract data ONLY for the **Serving Cell** (active connection).\n"
+        "   - IGNORE 'Neighbor', 'Monitored', 'Detected' lists.\n"
         "3. **Parameter Mapping**:\n"
-        "   - `arfcn`: Absolute Radio Frequency Channel Number (Integer, e.g., 632064 for NR, 2450 for LTE).\n"
-        "   - `pci`: Physical Cell ID (Integer, 0-1008).\n"
-        "   - `band`: The frequency band (e.g., 77, 66, 5, 2). Ignore 'n' prefix if present.\n"
-        "   - `bw`: Bandwidth in MHz (e.g., 5, 10, 15, 20, 40, 60, 80, 100). If you see 'RB' numbers (e.g. 273 RB), convert approximate MHz or look for the MHz text.\n"
-        "   - `rsrp` / `rsrq`: Signal strength/quality. RSRP is typically NEGATIVE (e.g., -80).\n"
-        "4. **Repeated Data**: If data appears on both screens, prefer the most detailed view. \n\n"
-        "REQUIRED OUTPUT:\n"
-        "Return strictly ONE valid JSON object matching the schema. Use null for missing fields.\n"
+        "   - `arfcn`: Integer (e.g., 632064 for NR, 2450 for LTE).\n"
+        "   - `pci`: Integer (0-1008).\n"
+        "   - `band`: Integer (e.g., 77, 66, 5). Ignore 'n'.\n"
+        "   - `bw`: Bandwidth in MHz (5, 10, 15, 20, 40, 60, 80, 100). If you see 'RB', convert to MHz (e.g., 273RB ≈ 50/60MHz depending on SCS, but usually text says 'X MHz').\n"
+        "   - `rsrp`: Signal strength. Must be NEGATIVE (e.g., -80).\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -287,7 +308,6 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
     finally:
         log_append(log_placeholder, logs, "[LOG] Cooldown: waiting 2 seconds")
         time.sleep(2)
-
 
 
 # ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
@@ -469,7 +489,7 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
     sector = Path(image1_path).stem.split("_")[0] if image1_path else "unknown"
     log_append(log_placeholder, logs, f"[EVAL] Re-evaluating service images for '{sector}' (careful)")
     
-    # STITCHING LOGIC
+    # STITCHING LOGIC (Required for Llama-3.2)
     try:
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
@@ -488,18 +508,20 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not stitch/encode images: {e}")
         return None
 
-    # UPDATED PROMPT: EXPERT RE-EVALUATION
+    # HYBRID PROMPT: EXPERT RE-EVALUATION + STRICT FORMATTING
     prompt = (
-        "CAREFUL EVALUATION: You are correcting missing Telecom Data.\n"
-        "Analyze this stitched Service Mode image.\n"
-        "RULES:\n"
-        "1. **Find Missing Keys**: Look specifically for ARFCN, PCI, Band, and RSRP for both LTE and 5G NR.\n"
-        "2. **Location**: \n"
-        "   - `nr_` data is in the 5G/NR block.\n"
-        "   - `lte_` data is in the LTE/Anchor block.\n"
-        "3. **Sanity Check**: RSRP must be negative. Bandwidth (BW) is typically 5, 10, 20, 60, 80, 100 MHz.\n"
-        "4. **Serving Only**: Do not extract data from the 'Neighbor' list.\n\n"
-        "Return valid JSON. Start with '{' and end with '}'.\n"
+        "CAREFUL EVALUATION: You are a Senior RF Engineer correcting missing Telecom Data.\n"
+        "Analyze this stitched Service Mode image to extract values that were missed previously.\n\n"
+        "CRITICAL RULES (FORMATTING):\n"
+        "1. **NO EXPLANATION**: Output ONLY the JSON string. Do not write 'Step 1' or 'Here is the JSON'.\n"
+        "2. **Single Output**: Provide exactly ONE JSON object. Start strictly with '{'.\n\n"
+        "CRITICAL RULES (DOMAIN LOGIC):\n"
+        "1. **Find Missing Keys**: Look specifically for ARFCN, PCI, Band, and RSRP values.\n"
+        "2. **Distinguish Techs**: `nr_` keys are for 5G NR. `lte_` keys are for LTE.\n"
+        "3. **Sanity Check**: \n"
+        "   - RSRP must be negative (e.g. -80).\n"
+        "   - Bandwidth (BW) is typically 5, 10, 15, 20, 40, 60, 80, 100 MHz.\n"
+        "4. **Serving Only**: Do not extract data from the 'Neighbor' or 'Detected' lists.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -520,7 +542,7 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         resp = _post_chat_completion(token, payload, timeout=120)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
-        content = clean_json_response(content)
+        content = clean_json_response(content) # Uses the new brace-counting cleaner
         return json.loads(content)
     except Exception as e:
         log_append(log_placeholder, logs, f"[EVAL ERROR] Service evaluation failed: {e}")
