@@ -212,21 +212,19 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
     sector = Path(image1_path).stem.split("_")[0]
     log_append(log_placeholder, logs, f"[LOG] Starting service extraction for '{sector}' using {model_name}")
     
-    # NEW LOGIC: Stitch 2 images into 1 to satisfy Llama-3.2 limit
+    # STITCHING LOGIC (Required for Llama-3.2 Vision)
     try:
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
         
-        # Create a new blank image with combined width
+        # Stitch side-by-side
         total_width = img1.width + img2.width
         max_height = max(img1.height, img2.height)
         stitched = Image.new('RGB', (total_width, max_height))
         
-        # Paste them side-by-side
         stitched.paste(img1, (0, 0))
         stitched.paste(img2, (img1.width, 0))
         
-        # Convert to base64
         buf = io.BytesIO()
         stitched.save(buf, format='PNG')
         b64_stitched = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -235,13 +233,28 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         log_append(log_placeholder, logs, f"[ERROR] Could not stitch/encode service images: {e}")
         return None
 
-    # UPDATED PROMPT: Reflects that we are sending 1 combined image
+    # UPDATED PROMPT: TELECOM EXPERT GUARDRAILS
     prompt = (
-        "You are a hyper-specialized AI for cellular network engineering. "
-        "Analyze this image (which contains two service-mode screenshots side-by-side). "
-        "Return EXACTLY one JSON object matching the schema. "
-        "STRICTLY return ONLY the JSON object. Do not add any conversational text. "
-        "Start your response with '{' and end with '}'.\n\n"
+        "You are a Senior RF Engineer analyzing Drive Test Service Mode screens. "
+        "The image contains two screenshots stitched side-by-side. "
+        "Extract technical network parameters for the ACTIVE SERVING CELL only.\n\n"
+        "CRITICAL EXTRACTION RULES:\n"
+        "1. **Distinguish Techs**: \n"
+        "   - Keys starting with `nr_` must come from the **5G NR** (or SCG) section.\n"
+        "   - Keys starting with `lte_` must come from the **LTE** (or MCG/Anchor) section.\n"
+        "   - Do NOT mix them (e.g., do not put LTE Band into `nr_band`).\n"
+        "2. **Serving vs Neighbor**: \n"
+        "   - Extract data ONLY for the **Serving Cell** (usually the top row, active connection, or labeled 'Serving').\n"
+        "   - IGNORE 'Neighbor', 'Monitored', 'Detected', or 'Listed' cells.\n"
+        "3. **Parameter Mapping**:\n"
+        "   - `arfcn`: Absolute Radio Frequency Channel Number (Integer, e.g., 632064 for NR, 2450 for LTE).\n"
+        "   - `pci`: Physical Cell ID (Integer, 0-1008).\n"
+        "   - `band`: The frequency band (e.g., 77, 66, 5, 2). Ignore 'n' prefix if present.\n"
+        "   - `bw`: Bandwidth in MHz (e.g., 5, 10, 15, 20, 40, 60, 80, 100). If you see 'RB' numbers (e.g. 273 RB), convert approximate MHz or look for the MHz text.\n"
+        "   - `rsrp` / `rsrq`: Signal strength/quality. RSRP is typically NEGATIVE (e.g., -80).\n"
+        "4. **Repeated Data**: If data appears on both screens, prefer the most detailed view. \n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return strictly ONE valid JSON object matching the schema. Use null for missing fields.\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -276,11 +289,6 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         time.sleep(2)
 
 
-# ---------------- SPECIALIZED ANALYZERS (SEPARATED) ----------------
-
-# ---------------- SPECIALIZED ANALYZERS (SEPARATED) ----------------
-
-# ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
 
 # ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
 
@@ -461,7 +469,7 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
     sector = Path(image1_path).stem.split("_")[0] if image1_path else "unknown"
     log_append(log_placeholder, logs, f"[EVAL] Re-evaluating service images for '{sector}' (careful)")
     
-    # NEW LOGIC: Stitch 2 images into 1
+    # STITCHING LOGIC
     try:
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
@@ -480,12 +488,18 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not stitch/encode images: {e}")
         return None
 
-    # UPDATED PROMPT
+    # UPDATED PROMPT: EXPERT RE-EVALUATION
     prompt = (
-        "CAREFUL EVALUATION: Examine this combined image (two screenshots side-by-side). "
-        "Return a single JSON object. Use null only if field truly not present. "
-        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
-        "Start your response with '{' and end with '}'.\n\n"
+        "CAREFUL EVALUATION: You are correcting missing Telecom Data.\n"
+        "Analyze this stitched Service Mode image.\n"
+        "RULES:\n"
+        "1. **Find Missing Keys**: Look specifically for ARFCN, PCI, Band, and RSRP for both LTE and 5G NR.\n"
+        "2. **Location**: \n"
+        "   - `nr_` data is in the 5G/NR block.\n"
+        "   - `lte_` data is in the LTE/Anchor block.\n"
+        "3. **Sanity Check**: RSRP must be negative. Bandwidth (BW) is typically 5, 10, 20, 60, 80, 100 MHz.\n"
+        "4. **Serving Only**: Do not extract data from the 'Neighbor' list.\n\n"
+        "Return valid JSON. Start with '{' and end with '}'.\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
