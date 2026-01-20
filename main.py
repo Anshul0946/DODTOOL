@@ -233,20 +233,52 @@ def _post_chat_completion(token: str, payload: dict, timeout: int = 60):
 
 def process_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0]
-    log_append(log_placeholder, logs, f"[LOG] Starting service extraction for '{sector}' using {model_name}")
+    log_append(log_placeholder, logs, f"[LOG] Processing Service Images for '{sector}' (Vertical Smart Stitch)...")
     
-    # STITCHING LOGIC
+    # 1. SMART VERTICAL STITCHING LOGIC
     try:
+        # Load images
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
         
-        total_width = img1.width + img2.width
-        max_height = max(img1.height, img2.height)
-        stitched = Image.new('RGB', (total_width, max_height))
+        # Pre-process: Convert to Greyscale & Enhance Contrast (Make text POP)
+        def enhance_img(img):
+            img = ImageOps.grayscale(img)
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.0) # High contrast
+            # Optional: Slight sharpness boost
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(1.5)
+            return img
+
+        img1 = enhance_img(img1)
+        img2 = enhance_img(img2)
+
+        # Vertical Stack (Top/Bottom)
+        # Resize width of img2 to match img1 to keep alignment (maintain aspect ratio)
+        if img1.width != img2.width:
+            ratio = img1.width / img2.width
+            new_height = int(img2.height * ratio)
+            img2 = img2.resize((img1.width, new_height), Image.Resampling.LANCZOS)
+
+        total_height = img1.height + img2.height + 50 # 50px padding
+        max_width = img1.width
         
+        # Create canvas (White background)
+        stitched = Image.new('L', (max_width, total_height), 255)
+        
+        # Paste Image 1 (Top)
         stitched.paste(img1, (0, 0))
-        stitched.paste(img2, (img1.width, 0))
         
+        # Draw a black separator line
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(stitched)
+        draw.rectangle([0, img1.height, max_width, img1.height + 50], fill=0)
+        
+        # Paste Image 2 (Bottom)
+        stitched.paste(img2, (0, img1.height + 50))
+        
+        # Save to buffer
         buf = io.BytesIO()
         stitched.save(buf, format='PNG')
         b64_stitched = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -255,7 +287,7 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         log_append(log_placeholder, logs, f"[ERROR] Could not stitch/encode service images: {e}")
         return None
 
-    # HYBRID PROMPT: STRICT FORMAT + DEEP TELECOM KNOWLEDGE
+    # 2. YOUR EXACT PROMPT
     prompt = (
         "You are a Senior RF Engineer. Analyze this stitched Service Mode image.\n"
         "Extract technical network parameters for the ACTIVE SERVING CELL only.\n\n"
@@ -302,8 +334,6 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         return result
     except Exception as e:
         log_append(log_placeholder, logs, f"[ERROR] API call failed for service images: {e}")
-        if "resp" in locals():
-            log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
         return None
     finally:
         log_append(log_placeholder, logs, "[LOG] Cooldown: waiting 2 seconds")
@@ -487,41 +517,67 @@ def evaluate_voice_image(token: str, image_path: str, model_name: str, log_place
 # ---------------- Careful evaluation functions ----------------
 def evaluate_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0] if image1_path else "unknown"
-    log_append(log_placeholder, logs, f"[EVAL] Re-evaluating service images for '{sector}' (careful)")
+    log_append(log_placeholder, logs, f"[EVAL] Re-evaluating service images for '{sector}' (Vertical Smart Stitch)...")
     
-    # STITCHING LOGIC (Required for Llama-3.2)
+    # 1. SMART VERTICAL STITCHING (Same high-quality logic as process_service_images)
     try:
+        # Load images
         img1 = Image.open(image1_path)
         img2 = Image.open(image2_path)
         
-        total_width = img1.width + img2.width
-        max_height = max(img1.height, img2.height)
-        stitched = Image.new('RGB', (total_width, max_height))
+        # Pre-process: Greyscale + High Contrast
+        def enhance_img(img):
+            img = ImageOps.grayscale(img)
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.0)
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(1.5)
+            return img
+
+        img1 = enhance_img(img1)
+        img2 = enhance_img(img2)
+
+        # Vertical Stack logic
+        if img1.width != img2.width:
+            ratio = img1.width / img2.width
+            new_height = int(img2.height * ratio)
+            img2 = img2.resize((img1.width, new_height), Image.Resampling.LANCZOS)
+
+        total_height = img1.height + img2.height + 50
+        max_width = img1.width
         
+        stitched = Image.new('L', (max_width, total_height), 255)
         stitched.paste(img1, (0, 0))
-        stitched.paste(img2, (img1.width, 0))
+        
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(stitched)
+        draw.rectangle([0, img1.height, max_width, img1.height + 50], fill=0)
+        
+        stitched.paste(img2, (0, img1.height + 50))
         
         buf = io.BytesIO()
         stitched.save(buf, format='PNG')
         b64_stitched = base64.b64encode(buf.getvalue()).decode("utf-8")
+        
     except Exception as e:
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not stitch/encode images: {e}")
         return None
 
-    # HYBRID PROMPT: EXPERT RE-EVALUATION + STRICT FORMATTING
+    # 2. EVALUATION SPECIFIC PROMPT (Focuses on MISSING data + Strict Rules)
     prompt = (
         "CAREFUL EVALUATION: You are a Senior RF Engineer correcting missing Telecom Data.\n"
-        "Analyze this stitched Service Mode image to extract values that were missed previously.\n\n"
+        "Analyze this vertically stitched Service Mode image (Top=Screen 1, Bottom=Screen 2).\n"
+        "Your goal is to extract values that might have been missed in the first pass.\n\n"
         "CRITICAL RULES (FORMATTING):\n"
-        "1. **NO EXPLANATION**: Output ONLY the JSON string. Do not write 'Step 1' or 'Here is the JSON'.\n"
+        "1. **NO EXPLANATION**: Output ONLY the JSON string. Do not write 'Step 1'.\n"
         "2. **Single Output**: Provide exactly ONE JSON object. Start strictly with '{'.\n\n"
         "CRITICAL RULES (DOMAIN LOGIC):\n"
         "1. **Find Missing Keys**: Look specifically for ARFCN, PCI, Band, and RSRP values.\n"
-        "2. **Distinguish Techs**: `nr_` keys are for 5G NR. `lte_` keys are for LTE.\n"
+        "2. **Distinguish Techs**: `nr_` = 5G, `lte_` = LTE. Do not mix them.\n"
         "3. **Sanity Check**: \n"
         "   - RSRP must be negative (e.g. -80).\n"
         "   - Bandwidth (BW) is typically 5, 10, 15, 20, 40, 60, 80, 100 MHz.\n"
-        "4. **Serving Only**: Do not extract data from the 'Neighbor' or 'Detected' lists.\n\n"
+        "4. **Serving Only**: Do not extract data from the 'Neighbor' list.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -542,12 +598,10 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         resp = _post_chat_completion(token, payload, timeout=120)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
-        content = clean_json_response(content) # Uses the new brace-counting cleaner
+        content = clean_json_response(content) 
         return json.loads(content)
     except Exception as e:
         log_append(log_placeholder, logs, f"[EVAL ERROR] Service evaluation failed: {e}")
-        if "resp" in locals():
-            log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
         return None
     finally:
         log_append(log_placeholder, logs, "[EVAL] Cooldown: waiting 2 seconds")
