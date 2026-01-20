@@ -23,7 +23,7 @@ from PIL import Image
 
 # ---------------- Configuration ----------------
 API_BASE = "https://integrate.api.nvidia.com/v1"
-MODEL_SERVICE_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
+MODEL_SERVICE_DEFAULT = "meta/llama-3.2-90b-vision-instruct"
 MODEL_GENERIC_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
 
 # ---------------- Schemas ----------------
