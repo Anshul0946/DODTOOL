@@ -345,25 +345,29 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
 def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """
     Strictly looks for Speed Test data.
-    Includes TELECOM EXPERT RULES to prevent hallucinations (e.g. reading 2160p as speed).
+    Includes 'CORNER SCAN' logic to force the model to look at small text.
     """
-    image_name = Path(image_path).name
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
         return None
 
-    # SMART PROMPT WITH DOMAIN KNOWLEDGE
+    # UPDATED PROMPT: Forces the model to look away from the center
     prompt = (
-        "You are a Senior RF Engineer validating 5G drive test data. Extract SPEED TEST metrics.\n\n"
-        "DOMAIN RULES (SANITY CHECKS):\n"
-        "1. **Resolution Trap**: If you see '2160', '1080', or '720', these are VIDEO RESOLUTIONS. Do NOT report them as Download/Upload speed.\n"
-        "2. **Latency vs Speed**: If the screen shows ONLY 'Ping' and 'Jitter' (Latency Test), return 'null' for Download/Upload.\n"
-        "3. **Decimal Danger**: Ping is usually an integer (e.g., 28, 44). If you see '2.8', look closer—it might be '28'. Do not hallucinate decimals for Ping unless clearly visible.\n"
-        "4. **Visual Hierarchy**: Download speed is usually the LARGEST number on screen. If a number is small or in the corner, it's likely metadata, not speed.\n\n"
+        "You are a Senior RF Engineer extracting SPEED TEST metrics.\n"
+        "Ignore the 'context' of the image (e.g. ads, logos) and focus ONLY on the data.\n\n"
+        "CRITICAL EXTRACTION STEPS (Follow in Order):\n"
+        "1. **Center Scan**: Find the LARGEST numbers. These are usually Download/Upload Mbps.\n"
+        "2. **CORNER SCAN (Crucial)**: \n"
+        "   - Shift your attention to the **bottom-right**, **bottom-left**, and **top corners**.\n"
+        "   - Look for small text labeled 'Ping', 'Latency', 'Jitter', 'Idle', or 'ms'.\n"
+        "   - **Force Extraction**: Even if the text is tiny, read it. It is NOT noise.\n"
+        "3. **Sanity Checks**:\n"
+        "   - '2160', '1080', '720' are Video Resolutions. Ignore them.\n"
+        "   - Ping is an integer (e.g. 23). If you see '2.3', it is likely '23'.\n\n"
         "REQUIRED OUTPUT:\n"
-        "Return valid JSON matching this schema exactly. Use null (no quotes) for missing values.\n"
+        "Return valid JSON matching this schema exactly. Use null for missing values.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['speed_test'], indent=2)}"
     )
 
@@ -378,13 +382,12 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
         content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
         res = json.loads(content)
         
-        # LOGIC CHECK 1: If the model returns 2160/1080 as speed, it failed the Domain Rule. Reject it.
+        # Logic Check: Reject 4K/1080p masquerading as Speed
         dl = res.get("data", {}).get("download_mbps")
         if dl in [2160, 1080, 720, 2160.0, 1080.0]:
-            log_append(log_placeholder, logs, f"[SMART CHECK] Rejected {dl} Mbps as likely Video Resolution.")
             return None 
             
-        # LOGIC CHECK 2: Must have at least download/upload OR valid ping to be useful
+        # Logic Check: Must have at least one valid metric
         data = res.get("data", {})
         if data.get("download_mbps") is None and data.get("upload_mbps") is None and data.get("ping_ms") is None:
             return None
@@ -395,23 +398,23 @@ def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeho
 
 
 def analyze_video_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    """Strictly looks for Video Test data. Prioritizes specific numbers over generic labels."""
+    """Strictly looks for Video Test data."""
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
         return None
 
+    # UPDATED PROMPT: Forces distinction between Marketing labels (4K) and Data (2160p)
     prompt = (
-        "You are a Senior RF Engineer validating video streaming tests. Extract VIDEO metrics.\n\n"
-        "DOMAIN RULES:\n"
-        "1. **Target**: Look strictly for 'Max Resolution', 'Resolution', 'Load Time', or 'Buffering'.\n"
-        "2. **Precision Rule (CRITICAL)**: \n"
-        "   - Prefer specific NUMERICAL resolutions (e.g., '2160p', '1080p') over generic labels (e.g., '4K', 'HD').\n"
-        "   - If the screen says '2160p' AND '4K', extract '2160p'.\n"
-        "   - Only output '4K' if no numerical resolution (like 2160p) is visible.\n"
-        "3. **Load Time**: Extract the exact number in milliseconds (ms). If units are seconds (s), convert (1.2s = 1200).\n"
-        "4. **Ignore Speed**: Do not extract Mbps figures here.\n\n"
+        "You are a Senior RF Engineer extracting VIDEO STREAMING metrics.\n\n"
+        "CRITICAL EXTRACTION RULES:\n"
+        "1. **Semantic Filter**: Ignore 'Speed Test' numbers (Mbps). Focus ONLY on Video stats.\n"
+        "2. **Resolution Priority**:\n"
+        "   - Look for specific NUMBERS: '2160p', '1080p', '1440p', '720p'.\n"
+        "   - '4K' and 'HD' are marketing labels. PREFER the number (e.g. '2160p') if visible.\n"
+        "   - Only return '4K' if no numeric resolution is found.\n"
+        "3. **Load Time**: Find values in 'ms' (milliseconds). If 's' (1.2s), convert to ms (1200).\n\n"
         "REQUIRED OUTPUT:\n"
         "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['video_test'], indent=2)}"
@@ -443,13 +446,14 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
     except Exception as e:
         return None
 
+    # UPDATED PROMPT: Forces attention to the Timer
     prompt = (
-        "You are a Telecom Engineer analyzing Voice Call tests. Extract CALL metrics.\n\n"
-        "RULES:\n"
-        "1. **Visuals**: Look for a dialer screen, 'Incoming Call', 'Dialing'.\n"
-        "2. **Duration (CRITICAL)**: Read the call timer EXACTLY as shown (e.g., '00:10', '0:12').\n"
-        "   - Convert the timer value to total seconds (e.g., '00:10' -> 10).\n"
-        "   - Do NOT assume the duration is 0 unless the timer literally reads '00:00'.\n"
+        "You are a Telecom Engineer extracting VOICE CALL metrics.\n\n"
+        "CRITICAL EXTRACTION RULES:\n"
+        "1. **Visual Scan**: Look for a 'Dialer', 'Incoming Call', or 'Green Phone Icon'.\n"
+        "2. **Timer Focus**: Locate the call timer (e.g. 00:12, 0:05).\n"
+        "   - **Math**: Convert '00:12' -> 12 seconds.\n"
+        "   - **Bias Check**: Do NOT assume duration is 0. Read the actual pixels. '00:04' is 4 seconds, not 0.\n"
         "3. **Ignore**: Speed/Video data.\n\n"
         "REQUIRED OUTPUT:\n"
         "Return valid JSON matching this schema exactly.\n"
