@@ -480,42 +480,38 @@ def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_
 
 def dispatch_image_analysis(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     """
-    Smart Router: Tries tests in a specific order based on filename index.
+    Deterministic Router: Uses filename index ONLY.
+    No guessing. No fallback.
     """
+
     path_obj = Path(image_path)
     image_name = path_obj.stem
-    
+
     # Extract index from filename (e.g. alpha_image_3 -> 3)
     try:
         idx = int(image_name.split("_")[-1])
     except:
         idx = 0
 
-    log_append(log_placeholder, logs, f"[LOG] Dispatching '{image_name}'...")
+    log_append(log_placeholder, logs, f"[LOG] Dispatching '{image_name}' (FIXED ROUTE)...")
 
-    # HEURISTIC: Images 3-7 are usually Speed. Images 8+ are usually Video.
+    # ---------------- STRICT ROUTING ----------------
+
+    # 3–7 = SPEED (Always)
     if 3 <= idx <= 7:
-        priority = ["speed", "video", "voice"]
+        log_append(log_placeholder, logs, f"[ROUTE] {image_name} -> SPEED")
+        return analyze_speed_test(token, image_path, model_name, log_placeholder, logs)
+
+    # 8+ = VIDEO (Always)
     elif idx >= 8:
-        priority = ["video", "speed", "voice"]
+        log_append(log_placeholder, logs, f"[ROUTE] {image_name} -> VIDEO")
+        return analyze_video_test(token, image_path, model_name, log_placeholder, logs)
+
+    # Otherwise = VOICE
     else:
-        priority = ["speed", "video", "voice"]
+        log_append(log_placeholder, logs, f"[ROUTE] {image_name} -> VOICE")
+        return analyze_voice_test_strict(token, image_path, model_name, log_placeholder, logs)
 
-    for test_type in priority:
-        res = None
-        if test_type == "speed":
-            res = analyze_speed_test(token, image_path, model_name, log_placeholder, logs)
-        elif test_type == "video":
-            res = analyze_video_test(token, image_path, model_name, log_placeholder, logs)
-        elif test_type == "voice":
-            res = analyze_voice_test_strict(token, image_path, model_name, log_placeholder, logs)
-        
-        if res:
-            log_append(log_placeholder, logs, f"[SUCCESS] '{image_name}' identified as {test_type.upper()}.")
-            return res
-
-    log_append(log_placeholder, logs, f"[WARN] Could not identify '{image_name}' (tried {priority}).")
-    return None
 
 # Wrappers to maintain compatibility if called elsewhere
 def evaluate_generic_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
